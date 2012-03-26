@@ -1,0 +1,277 @@
+Binary files kernel/.git/index and kernel_new/.git/index differ
+diff -ruNp kernel/include/linux/powermemo.h kernel_new/include/linux/powermemo.h
+--- kernel/include/linux/powermemo.h	1970-01-01 08:00:00.000000000 +0800
++++ kernel_new/include/linux/powermemo.h	2011-08-24 18:04:05.140192608 +0800
+@@ -0,0 +1,48 @@
++/*
++ *      powermemo.h
++ *      
++ *      Copyright 2010 BRASS LAB - All rights reserved
++ * 			National Chiao Tung University, Hsinchu,TAIWAN R.O.C.
++ * 			Developed by Ilter Suat <iltersuat@gmail.com>
++ * 			    
++ *      This program is free software; you can redistribute it and/or modify
++ *      it under the terms of the GNU General Public License as published by
++ *      the Free Software Foundation; either version 2 of the License, or
++ *      (at your option) any later version.
++ *      
++ *      This program is distributed in the hope that it will be useful,
++ *      but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *      GNU General Public License for more details.
++ *      
++ *      You should have received a copy of the GNU General Public License
++ *      along with this program; if not, write to the Free Software
++ *      Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
++ *      MA 02110-1301, USA.
++ */
++
++#ifndef _LINUX_POWERMEMO_H
++#define _LINUX_POWERMEMO_H
++
++#include <linux/time.h>
++
++/* powermemo_avail is set to 1 when the powermemo module is inserted,
++ * and it is set to 0 when removed 
++ */
++extern int powermemo_avail;  /* 1: available  0: not available */
++
++
++typedef struct  {
++  /*processor*/
++  int (*process_slice_entry)(int pid,char *comm); /* comm[16] stores the process name */
++  int (*process_slice_exit)(int pid);
++	int (*markerfunc_entry)(int pid, int fid); /* These two are for functional level profiling */
++	int (*markerfunc_exit)(int pid, int fid);
++	int (*xmit_entry)(int pid,int bitrate, unsigned long packet_size);
++	int (*rcv_entry)(int pid,int bitrate, unsigned long packet_size);
++} powermemo_functions;
++
++
++extern powermemo_functions powermemofuncs;
++
++#endif
+diff -ruNp kernel/include/net/sock.h kernel_new/include/net/sock.h
+--- kernel/include/net/sock.h	2011-08-20 17:10:51.000000000 +0800
++++ kernel_new/include/net/sock.h	2011-08-24 18:04:04.910310499 +0800
+@@ -241,6 +241,8 @@ struct sock {
+ #define sk_bind_node		__sk_common.skc_bind_node
+ #define sk_prot			__sk_common.skc_prot
+ #define sk_net			__sk_common.skc_net
++	/* PowerMemo Patch !!*/
++	int pid;
+ 	kmemcheck_bitfield_begin(flags);
+ 	unsigned int		sk_shutdown  : 2,
+ 				sk_no_check  : 2,
+diff -ruNp kernel/kernel/sched.c kernel_new/kernel/sched.c
+--- kernel/kernel/sched.c	2011-08-20 17:10:51.000000000 +0800
++++ kernel_new/kernel/sched.c	2011-08-24 18:04:20.162488657 +0800
+@@ -83,6 +83,14 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/sched.h>
+ 
++/* powermemo: When pmemo_client writes to the powermemo.ko's device file, this flag will be set/cleared */
++int powermemo_avail = 0;  /*  1: available  0: not available */
++EXPORT_SYMBOL(powermemo_avail);
++
++#include <linux/powermemo.h>
++powermemo_functions powermemofuncs;
++EXPORT_SYMBOL(powermemofuncs);
++
+ /*
+  * Convert user-nice values [ -20 ... 0 ... 19 ]
+  * to static priority [ MAX_RT_PRIO..MAX_PRIO-1 ],
+@@ -4123,6 +4131,15 @@ need_resched_nonpreemptible:
+ 	rq->skip_clock_update = 0;
+ 
+ 	if (likely(prev != next)) {
++
++		/* PowerMemo patch !! */
++		if (powermemo_avail == 1) {
++			powermemofuncs.process_slice_exit(current->pid);
++			/* printk(KERN_EMERG"%d have called process_slice_exit\n", current->pid); */
++			powermemofuncs.process_slice_entry(next->pid, next->comm);
++		}	
++
++
+ 		sched_info_switch(prev, next);
+ 		perf_event_task_sched_out(prev, next);
+ 
+diff -ruNp kernel/net/core/sock.c kernel_new/net/core/sock.c
+--- kernel/net/core/sock.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/core/sock.c	2011-08-24 18:03:39.573304188 +0800
+@@ -2023,6 +2023,9 @@ void sock_init_data(struct socket *sock,
+ 	smp_wmb();
+ 	atomic_set(&sk->sk_refcnt, 1);
+ 	atomic_set(&sk->sk_drops, 0);
++
++	/* PowerMemo Patch !!*/
++	sk->pid = current->pid;
+ }
+ EXPORT_SYMBOL(sock_init_data);
+ 
+diff -ruNp kernel/net/ipv4/af_inet.c kernel_new/net/ipv4/af_inet.c
+--- kernel/net/ipv4/af_inet.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/ipv4/af_inet.c	2011-08-24 18:03:39.583299062 +0800
+@@ -362,6 +362,9 @@ lookup_protocol:
+ 	if (sk == NULL)
+ 		goto out;
+ 
++	/*  PowerMemo Patch !! */
++	sk->pid = current->pid;
++
+ 	err = 0;
+ 	sk->sk_no_check = answer_no_check;
+ 	if (INET_PROTOSW_REUSE & answer_flags)
+diff -ruNp kernel/net/ipv4/tcp_ipv4.c kernel_new/net/ipv4/tcp_ipv4.c
+--- kernel/net/ipv4/tcp_ipv4.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/ipv4/tcp_ipv4.c	2011-08-24 18:03:39.573304188 +0800
+@@ -82,6 +82,10 @@
+ #include <linux/crypto.h>
+ #include <linux/scatterlist.h>
+ 
++/* PowerMemo Patch !! */
++#include <linux/powermemo.h>
++extern int my_rxbitrate;
++
+ int sysctl_tcp_tw_reuse __read_mostly;
+ int sysctl_tcp_low_latency __read_mostly;
+ EXPORT_SYMBOL(sysctl_tcp_low_latency);
+@@ -1664,6 +1668,16 @@ int tcp_v4_rcv(struct sk_buff *skb)
+ 	if (!sk)
+ 		goto no_tcp_socket;
+ 
++	/* PowerMemo Patch !! */
++	if(powermemo_avail == 1 && 
++			skb != NULL && 
++			skb->dev->name[0] == 'w'){ /*  name ?= wlanX */
++
++		powermemofuncs.rcv_entry(sk->pid, my_rxbitrate, skb->len); 
++		/* printk("tcp_v4_rcv: pid = %d, len = %d\n",sk->pid, skb->len); */
++	}
++
++
+ process:
+ 	if (sk->sk_state == TCP_TIME_WAIT)
+ 		goto do_time_wait;
+diff -ruNp kernel/net/ipv4/udp.c kernel_new/net/ipv4/udp.c
+--- kernel/net/ipv4/udp.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/ipv4/udp.c	2011-08-24 18:03:39.573304188 +0800
+@@ -107,6 +107,10 @@
+ #include <net/xfrm.h>
+ #include "udp_impl.h"
+ 
++/* PowerMemo Patch !!*/
++#include <linux/powermemo.h>
++extern int my_rxbitrate;
++
+ struct udp_table udp_table __read_mostly;
+ EXPORT_SYMBOL(udp_table);
+ 
+@@ -1605,6 +1609,16 @@ int __udp4_lib_rcv(struct sk_buff *skb,
+ 	sk = __udp4_lib_lookup_skb(skb, uh->source, uh->dest, udptable);
+ 
+ 	if (sk != NULL) {
++
++		/* PowerMemo Patch !! */
++		if(powermemo_avail == 1 && 
++				skb != NULL && 
++				skb->dev->name[0] == 'w'){ /* name ?= wlanX */
++
++			powermemofuncs.rcv_entry(sk->pid, my_rxbitrate, skb->len); //change it ilter
++			/* printk("udp_rcv: skb->sk->pid = %d,skb->len = %d\n",skb->sk->pid,skb->len); */
++		}
++
+ 		int ret = udp_queue_rcv_skb(sk, skb);
+ 		sock_put(sk);
+ 
+diff -ruNp kernel/net/mac80211/rx.c kernel_new/net/mac80211/rx.c
+--- kernel/net/mac80211/rx.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/mac80211/rx.c	2011-08-24 18:03:39.543319564 +0800
+@@ -28,6 +28,10 @@
+ #include "tkip.h"
+ #include "wme.h"
+ 
++/* PowerMemo Patch !! */
++int my_rxbitrate = 0;
++EXPORT_SYMBOL(my_rxbitrate);
++
+ /*
+  * monitor mode reception
+  *
+@@ -2872,6 +2876,9 @@ void ieee80211_rx(struct ieee80211_hw *h
+ 	 */
+ 	rcu_read_lock();
+ 
++	/* PowerMemo Patch !!*/
++	my_rxbitrate = rate->bitrate;
++
+ 	/*
+ 	 * Frames with failed FCS/PLCP checksum are not returned,
+ 	 * all other frames are returned without radiotap header
+diff -ruNp kernel/net/mac80211/tx.c kernel_new/net/mac80211/tx.c
+--- kernel/net/mac80211/tx.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/mac80211/tx.c	2011-08-24 18:03:39.533324690 +0800
+@@ -33,6 +33,11 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++
++/* PowerMemo Patch !! */
++int my_txbitrate = 0;
++EXPORT_SYMBOL(my_txbitrate);
++
+ #define IEEE80211_TX_OK		0
+ #define IEEE80211_TX_AGAIN	1
+ #define IEEE80211_TX_PENDING	2
+@@ -153,6 +158,14 @@ static __le16 ieee80211_duration(struct
+ 		rate = mrate;
+ 	}
+ 
++
++	/* PowerMemo Patch !! */
++	if(rate > 0){
++		my_txbitrate = rate; /* The real rate = rate * 100K,so 540 means 54Mbit/s */
++		/*  printk("my_txbitrate = %d\n",my_txbitrate); */
++	}
++
++
+ 	/* Time needed to transmit ACK
+ 	 * (10 bytes + 4-byte FCS = 112 bits) plus SIFS; rounded up
+ 	 * to closest integer */
+diff -ruNp kernel/net/sched/sch_generic.c kernel_new/net/sched/sch_generic.c
+--- kernel/net/sched/sch_generic.c	2011-08-20 17:10:52.000000000 +0800
++++ kernel_new/net/sched/sch_generic.c	2011-08-24 18:03:39.583299062 +0800
+@@ -28,6 +28,11 @@
+ #include <net/pkt_sched.h>
+ #include <net/dst.h>
+ 
++/* PowerMemo Patch !! */
++#include <linux/powermemo.h>
++#include <net/sock.h>
++extern int my_txbitrate;
++
+ /* Main transmission queue. */
+ 
+ /* Modifications to data participating in scheduling must be protected with
+@@ -122,8 +127,19 @@ int sch_direct_xmit(struct sk_buff *skb,
+ 	spin_unlock(root_lock);
+ 
+ 	HARD_TX_LOCK(dev, txq, smp_processor_id());
+-	if (!netif_tx_queue_stopped(txq) && !netif_tx_queue_frozen(txq))
++	if (!netif_tx_queue_stopped(txq) && !netif_tx_queue_frozen(txq)) {
++
++		/* PowerMemo Patch !! */
++		if(powermemo_avail == 1 &&  
++				skb != NULL && 
++				skb->sk != NULL &&
++				skb->dev->name[0] == 'w' ){
++
++			powermemofuncs.xmit_entry(skb->sk->pid, my_txbitrate, skb->len);
++		}
++
+ 		ret = dev_hard_start_xmit(skb, dev, txq);
++	}
+ 
+ 	HARD_TX_UNLOCK(dev, txq);
+ 
